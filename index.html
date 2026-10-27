@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gerador Moldaê</title><link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Bebas+Neue&family=Caveat&family=Dancing+Script&family=Fredoka&family=Lobster&family=Oswald&family=Pacifico&family=Playfair+Display&family=Roboto+Slab&family=Special+Elite&display=swap">
+<style>
+:root{--bg:#f6f1ea;--card:#fff;--tx:#3b2f27;--mut:#8a7a6c;--ac:#8b5a3c;--bd:#e2d8cc;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#1f1a16;--card:#2a231e;--tx:#f0e6da;--mut:#a89888;--ac:#d09a73;--bd:#43382f;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px system-ui,sans-serif;padding:16px;padding-top:calc(16px + env(safe-area-inset-top,0px))}
+h1{font-size:20px;margin:0 0 10px}h3{grid-column:1/-1;font-size:13px;margin:14px 0 0;color:var(--ac);text-transform:uppercase;letter-spacing:.04em}
+main{max-width:1060px;margin:auto;display:grid;gap:14px;grid-template-columns:minmax(0,340px) minmax(0,1fr)}
+@media(max-width:760px){main{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px}
+#ctl{display:grid;grid-template-columns:1fr 1fr;gap:0 8px}.full{grid-column:1/-1}[hidden]{display:none!important}
+label{display:block;font-size:12px;color:var(--mut);margin:10px 0 3px}
+input[type=number],input[type=text],select,textarea{width:100%;padding:8px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit}
+input[type=range]{width:100%}.chk{display:flex;gap:6px;align-items:center;margin-top:8px;font-size:13px}
+button{display:block;width:100%;margin-top:14px;padding:11px;border:0;border-radius:8px;background:var(--ac);color:#fff;font-weight:600;cursor:pointer}
+button.sm{display:inline-block;width:auto;margin:6px 6px 0 0;padding:6px 10px;font-size:12px;background:var(--bd);color:var(--tx)}
+canvas{width:100%;max-height:520px;object-fit:contain;background:repeating-conic-gradient(var(--bd) 0 25%,transparent 0 50%) 0 0/16px 16px;border-radius:8px}
+.info{color:var(--mut);font-size:13px;margin-top:8px}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/d3-array@3.2.4/dist/d3-array.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-contour@3.0.1/dist/d3-contour.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
+</head><body>
+<main>
+<section class="card"><h1>Gerador Moldaê</h1>
+<label>Tipo de trabalho</label>
+<select id="mode"><option value="cut">Cortador</option><option value="mark">Marcador</option><option value="stamp">Carimbo (imagem)</option><option value="alpha">Carimbos de alfabeto</option><option value="solid">Peça sólida (prato, copo, base…)</option></select>
+<div id="ctl"></div>
+<button id="dl">Baixar (ZIP com STL)</button><div class="info" id="info">Escolha o tipo e envie uma imagem (ou digite as letras).</div></section>
+<section class="card"><canvas id="cv" width="400" height="300"></canvas>
+<select id="pv" style="margin-top:8px" hidden></select>
+<div class="info">Prévia vista de cima. Claro = base/aba, escuro = parede/relevo. Use formas escuras em fundo claro ou transparente.</div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id),V=id=>+$(id).value||0;let SRC=null,PARTS=[],tok=0,timer=0;
+const IM='cut mark stamp solid',n=(id,l,v,m,st=.5)=>`<div class="f" data-m="${m}"><label>${l}</label><input type="number" id="${id}" value="${v}" step="${st}"></div>`;
+const s=(id,l,o,m)=>`<div class="f" data-m="${m}"><label>${l}</label><select id="${id}">${o.split(',').map(x=>{const[a,b]=x.split('|');return`<option value="${a}">${b}</option>`}).join('')}</select></div>`;
+const c=(id,l,k,m)=>`<div class="f full chk" data-m="${m}"><input type="checkbox" id="${id}" ${k?'checked':''}><span>${l}</span></div>`;
+const h=(t,m)=>`<h3 data-m="${m}">${t}</h3>`;
+$('ctl').innerHTML=[
+h('Imagem',IM),`<div class="f full" data-m="${IM}"><label>Arquivo (SVG dá a melhor qualidade)</label><input type="file" id="f" accept="image/*">
+<label>Ou descreva a peça e a IA desenha a silhueta</label><input type="text" id="desc" placeholder="ex.: prato oval com borda ondulada"><button class="sm" id="gen">Gerar silhueta</button></div>`,
+s('dim','Medir pela|w|Largura,h|Altura',IM),n('w','Tamanho (mm)',60,IM,1),
+h('Letras','alpha'),`<div class="f full" data-m="alpha"><label>Letras / números (uma peça por caractere)</label><textarea id="txt" rows="2">ABC</textarea>
+<button class="sm" data-t="ABCDEFGHIJKLMNOPQRSTUVWXYZ">A–Z</button><button class="sm" data-t="abcdefghijklmnopqrstuvwxyz">a–z</button><button class="sm" data-t="0123456789">0–9</button><button class="sm" data-t="ÁÀÂÃÉÊÍÓÔÕÚÇáàâãéêíóôõúç">Acentos</button></div>`,
+s('fnt','Fonte','Arial|Arial,Georgia|Georgia,Times New Roman|Times,Courier New|Courier,Verdana|Verdana,Impact|Impact,Anton|Anton,Bebas Neue|Bebas Neue,Oswald|Oswald,Roboto Slab|Roboto Slab,Playfair Display|Playfair Display,Special Elite|Máquina de escrever,Lobster|Lobster,Pacifico|Pacifico,Dancing Script|Dancing Script,Caveat|Caveat,Fredoka|Fredoka','alpha'),n('ls','Altura da letra (mm)',10,'alpha',1),
+c('bold','Negrito',0,'alpha'),c('ital','Itálico',0,'alpha'),
+h('Parede e aba','cut mark'),n('wh','Altura parede (mm)',12,'cut mark'),n('wt','Espessura (mm)',1.2,'cut mark',.1),n('fw','Aba externa (mm)',4,'cut mark'),n('fh','Altura aba (mm)',1.6,'cut mark',.2),n('ct','Fundo fechado (mm, 0 = vazado)',0,'cut mark',.2),
+s('pg','Pegador','none|Nenhum,bar|Barra no topo','cut mark'),n('bwid','Largura da barra (mm)',8,'cut mark',1),n('bt','Espessura barra (mm)',2,'cut mark'),s('bdir','Direção da barra','h|Horizontal,v|Vertical','cut mark'),
+h('Carimbo','stamp alpha'),n('rl','Relevo (mm)',2,'stamp alpha'),n('bs','Base (mm)',3,'stamp alpha'),s('bsh','Formato da base','rect|Retangular,round|Redonda,cont|Seguir contorno','stamp alpha'),n('mg','Margem (mm)',5,'stamp'),
+n('bw','Base largura (mm)',14,'alpha',1),n('bh','Base altura (mm)',14,'alpha',1),n('cr','Raio dos cantos (mm)',2,'stamp alpha'),s('rtp','Relevo','pos|Positivo,neg|Negativo (afunda)','stamp'),
+s('hnd','Cabo atrás','none|Nenhum,cyl|Cilíndrico,blk|Bloco,ring|Argola','stamp alpha'),n('hd','Cabo Ø / largura (mm)',12,'stamp alpha',1),n('hh','Cabo altura (mm)',12,'stamp alpha',1),
+c('mk','Letra de orientação atrás (sem cabo)',1,'alpha'),n('mkh','Altura da marca (mm)',.6,'alpha',.1),c('mir','Espelhar (carimba na posição certa)',1,'stamp alpha'),
+h('Suporte de alinhamento','alpha'),c('sup','Gerar suporte (gaveta)',1,'alpha'),n('sL','Comprimento interno (mm)',60,'alpha',1),n('sf','Folga (mm)',.6,'alpha',.1),n('sw','Parede (mm)',2,'alpha'),n('sp','Piso (mm)',2,'alpha'),n('sh','Altura parede (mm)',10,'alpha',1),c('so','Gaveta aberta numa ponta',1,'alpha'),
+h('Peça sólida','solid'),n('H','Altura total (mm)',20,'solid',1),s('tb','Borda embaixo','flat|Reta,round|Arredondada,cham|Chanfro','solid'),n('rb','Raio embaixo (mm)',0,'solid'),s('tt','Borda em cima','flat|Reta,round|Arredondada,cham|Chanfro','solid'),n('rt','Raio em cima (mm)',3,'solid'),
+s('ear','Pegadores','none|Nenhum,two|Duas orelhas,one|Uma orelha','solid'),n('er','Raio da orelha (mm)',12,'solid',1),n('eh','Raio do furo (mm)',4,'solid'),
+h('Leitura da imagem',IM),`<div class="f full" data-m="${IM}"><label>Limiar de detecção</label><input type="range" id="th" min="20" max="235" value="128"><label>Suavizar traço</label><input type="range" id="sm" min="0" max="6" value="1"></div>`,c('inv','Inverter (usar o claro como forma)',0,IM)
+].join('');
+const PRE={cut:{wh:12,wt:1.2,fw:4,fh:1.6,ct:0},mark:{wh:4,wt:.8,fw:0,fh:0,ct:0},stamp:{rl:2,bs:3,mg:5},alpha:{rl:3,bs:4,bw:14,bh:14,ls:10},solid:{H:20}};
+function apply(){const m=$('mode').value;document.querySelectorAll('[data-m]').forEach(e=>e.hidden=!e.dataset.m.split(' ').includes(m));for(const k in PRE[m])$(k).value=PRE[m][k];sched()}
+$('mode').onchange=apply;apply();
+document.querySelectorAll('#ctl input:not([type=file]),#ctl select,#ctl textarea').forEach(e=>{e.oninput=sched;e.onchange=sched});
+document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{$('txt').value=b.dataset.t;sched()});
+const setImg=u=>{const i=new Image();i.onload=()=>{SRC=i;sched()};i.src=u};
+$('f').onchange=e=>{const f=e.target.files[0];if(f)setImg(URL.createObjectURL(f))};
+$('gen').onclick=async()=>{const t=$('desc').value.trim();if(!t)return;const sp=window.claude?await window.claude.use('sample'):null;if(!sp){$('info').textContent='Geração por IA indisponível aqui.';return}
+$('info').textContent='Desenhando silhueta…';try{const r=await sp('Responda SOMENTE com um SVG (sem markdown): viewBox="0 0 400 400", fundo branco, UMA silhueta preenchida de preto, contorno limpo e simplificado, sem detalhes internos finos, vista adequada para um molde de cerâmica. Objeto: '+t);
+let m=r.text.match(/<svg[\s\S]*<\/svg>/);if(!m)throw Error('a IA não devolveu um SVG');let sv=m[0];if(!/\swidth=/.test(sv.slice(0,200)))sv=sv.replace('<svg','<svg width="800" height="800"');setImg(URL.createObjectURL(new Blob([sv],{type:'image/svg+xml'})))}catch(e){$('info').textContent='Erro: '+(e.message||e.code)}};
+function sched(){clearTimeout(timer);if($('mode').value!=='alpha'&&!SRC)return;$('info').textContent='Gerando…';timer=setTimeout(build,500)}
+const cnv=(w,h)=>{const e=document.createElement('canvas');e.width=w;e.height=h;return e};
+function edt(T,W,H){const f=new Float32Array(W*H),n=Math.max(W,H),a=new Float64Array(n),b=new Float64Array(n),v=new Int32Array(n),z=new Float64Array(n+1);
+for(let i=0;i<f.length;i++)f[i]=T[i]?0:1e8;
+const run=len=>{let k=0;v[0]=0;z[0]=-1e20;z[1]=1e20;
+for(let q=1;q<len;q++){let s;do{const p=v[k];s=((a[q]+q*q)-(a[p]+p*p))/(2*q-2*p);if(s<=z[k])k--;else break}while(k>=0);k++;v[k]=q;z[k]=s;z[k+1]=1e20}
+k=0;for(let q=0;q<len;q++){while(z[k+1]<q)k++;const p=v[k];b[q]=(q-p)*(q-p)+a[p]}};
+for(let i=0;i<W;i++){for(let j=0;j<H;j++)a[j]=f[j*W+i];run(H);for(let j=0;j<H;j++)f[j*W+i]=b[j]}
+for(let j=0;j<H;j++){for(let i=0;i<W;i++)a[i]=f[j*W+i];run(W);for(let i=0;i<W;i++)f[j*W+i]=Math.sqrt(b[i])}return f}
+function blur(S,W,H,r){const t=new Float32Array(S.length),L=2*r+1;
+const pass=(src,dst,len,cnt,st,ss)=>{for(let u=0;u<cnt;u++){let s=0;const o=u*st;for(let q=-r;q<=r;q++)s+=src[o+Math.min(len-1,Math.max(0,q))*ss];
+for(let q=0;q<len;q++){dst[o+q*ss]=s/L;s+=src[o+Math.min(len-1,q+r+1)*ss]-src[o+Math.max(0,q-r)*ss]}}};
+for(let k=0;k<2;k++){pass(S,t,W,H,W,1);pass(t,S,H,W,1,W)}}
+function simp(r,e){const n=r.length;if(n<8)return r;let m=0,md=-1;for(let i=1;i<n;i++){const d=(r[i][0]-r[0][0])**2+(r[i][1]-r[0][1])**2;if(d>md){md=d;m=i}}
+const keep=new Uint8Array(n);keep[0]=keep[m]=1;
+const seg=(A,B)=>{const st=[[A,B]];while(st.length){const[i,j]=st.pop();const[ax,ay]=r[i%n],[bx,by]=r[j%n],dx=bx-ax,dy=by-ay,L=Math.hypot(dx,dy)||1e-9;let mx=-1,k=-1;
+for(let t=i+1;t<j;t++){const p=r[t%n],d=Math.abs((p[0]-ax)*dy-(p[1]-ay)*dx)/L;if(d>mx){mx=d;k=t}}
+if(mx>e){keep[k%n]=1;st.push([i,k],[k,j])}}};seg(0,m);seg(m,n);return r.filter((_,i)=>keep[i])}
+const area=r=>{let s=0;for(let i=0;i<r.length;i++){const a=r[i],b=r[(i+1)%r.length];s+=a[0]*b[1]-b[0]*a[1]}return s/2};
+function contour(F,P){const{GW:W,GH:H,px}=P,res=d3.contours().size([W,H]).thresholds([0])(F)[0].coordinates,out=[];
+for(const poly of res){const Q=[];
+for(let ri=0;ri<poly.length;ri++){let r=poly[ri].slice(0,-1).map(p=>[p[0]*px,(H-p[1])*px]);
+for(let k=0;k<3;k++){const n=r.length;r=r.map((p,i)=>{const a=r[(i+n-1)%n],c=r[(i+1)%n];return[.25*a[0]+.5*p[0]+.25*c[0],.25*a[1]+.5*p[1]+.25*c[1]]})}
+r=simp(r,Math.max(.3*px,.004));if(r.length<4||Math.abs(area(r))<.02){if(ri===0)break;continue}
+const ar=area(r);if((ri===0&&ar<0)||(ri>0&&ar>0))r.reverse();Q.push(r)}
+if(Q.length)out.push(Q)}return out}
+const R=(F,P,z0,z1,col)=>({p:contour(F,P),z0,z1,col});
+const fld=(P,f)=>{const{GW,GH,px}=P,F=new Float32Array(GW*GH);for(let j=0,k=0;j<GH;j++){const y=(GH-j-.5)*px;for(let i=0;i<GW;i++,k++)F[k]=f((i+.5)*px,y,k)}return F};
+const sdf=P=>{const{M,GW,GH,px}=P,Di=edt(M.map(v=>v?0:1),GW,GH),Do=edt(M,GW,GH),F=new Float32Array(M.length);for(let k=0;k<F.length;k++)F[k]=M[k]?(Di[k]-.5)*px:-(Do[k]-.5)*px;return F};
+function prism(polys,z0,z1,T){for(const P of polys){const flat=[],holes=[];P.forEach((r,ri)=>{if(ri)holes.push(flat.length/2);for(const p of r)flat.push(p[0],p[1])});
+const idx=earcut(flat,holes),pt=i=>[flat[2*i],flat[2*i+1]];
+for(let t=0;t<idx.length;t+=3){const a=pt(idx[t]);let b=pt(idx[t+1]),c=pt(idx[t+2]);if((b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0])<0)[b,c]=[c,b];
+T.push(a[0],a[1],z1,b[0],b[1],z1,c[0],c[1],z1,a[0],a[1],z0,c[0],c[1],z0,b[0],b[1],z0)}
+for(const r of P)for(let i=0;i<r.length;i++){const a=r[i],b=r[(i+1)%r.length];T.push(a[0],a[1],z0,b[0],b[1],z0,b[0],b[1],z1,a[0],a[1],z0,b[0],b[1],z1,a[0],a[1],z1)}}}
+function prep(src,o){const iw=src.naturalWidth||src.width||300,ih=src.naturalHeight||src.height||300;
+const ls=400/Math.max(iw,ih),lw=Math.max(1,Math.round(iw*ls)),lh=Math.max(1,Math.round(ih*ls));
+const g0=cnv(lw,lh).getContext('2d',{willReadFrequently:true});g0.drawImage(src,0,0,lw,lh);
+const d0=g0.getImageData(0,0,lw,lh).data;let hasA=false;for(let i=3;i<d0.length;i+=4)if(d0[i]<250){hasA=true;break}
+const sv=(r,g,b,a)=>{const v=hasA?a:255-(.3*r+.59*g+.11*b);return o.inv?255-v:v},lev=255-o.th;
+let bx0=1e9,by0=1e9,bx1=-1,by1=-1;
+for(let j=0;j<lh;j++)for(let i=0;i<lw;i++){const q=(j*lw+i)*4;if(sv(d0[q],d0[q+1],d0[q+2],d0[q+3])>lev){if(i<bx0)bx0=i;if(i>bx1)bx1=i;if(j<by0)by0=j;if(j>by1)by1=j}}
+if(bx1<0)throw Error('nenhuma forma detectada; ajuste o limiar ou use Inverter');
+const bwL=bx1-bx0+1,bhL=by1-by0+1,mm=o.ppm?bwL/ls*o.ppm:(o.dim==='h'?o.mm*bwL/bhL:o.mm);
+const sx=Math.max(0,(bx0-2)/ls),sy=Math.max(0,(by0-2)/ls),sw=Math.min(iw,(bx1+3)/ls)-sx,sh=Math.min(ih,(by1+3)/ls)-sy;
+let gw=Math.min(1600,Math.max(150,Math.round(mm/.04))),gh=Math.round(gw*sh/sw);const k0=Math.min(1,1800/Math.max(gw,gh));gw=Math.round(gw*k0);gh=Math.round(gh*k0);
+const pad=Math.ceil(o.padmm/(mm/gw))+2,GW=gw+2*pad,GH=gh+2*pad,x=cnv(GW,GH).getContext('2d',{willReadFrequently:true});x.imageSmoothingQuality='high';
+if(!hasA){x.fillStyle='#fff';x.fillRect(0,0,GW,GH)}
+if(o.mir){x.translate(GW,0);x.scale(-1,1)}x.drawImage(src,sx,sy,sw,sh,pad,pad,gw,gh);
+const dd=x.getImageData(0,0,GW,GH).data,N=GW*GH,S=new Float32Array(N);
+for(let j=pad;j<pad+gh;j++)for(let i=pad;i<pad+gw;i++){const k=j*GW+i,q=k*4;S[k]=sv(dd[q],dd[q+1],dd[q+2],dd[q+3])}
+if(o.sm>0)blur(S,GW,GH,o.sm);
+const M=new Uint8Array(N);let mi=1e9,ma=-1,mj=1e9,mb=-1;
+for(let j=0;j<GH;j++)for(let i=0;i<GW;i++){const k=j*GW+i;if(S[k]>lev){M[k]=1;if(i<mi)mi=i;if(i>ma)ma=i;if(j<mj)mj=j;if(j>mb)mb=j}}
+const px=mm/(ma-mi+1),X0=mi*px,X1=(ma+1)*px,Y0=(GH-mb-1)*px,Y1=(GH-mj)*px;
+return{S,M,GW,GH,px,lev,X0,X1,Y0,Y1,cx:(X0+X1)/2,cy:(Y0+Y1)/2}}
+function stampRegs(P,B,o){const{cx,cy,X0,X1,Y0,Y1,px}=P,r=[],{bs,rl,mg}=o,fx=o.fixed;
+const rr=(w,h,k)=>{const hw=w/2-k,hh=h/2-k;return fld(P,(x,y)=>{const qx=Math.abs(x-cx)-hw,qy=Math.abs(y-cy)-hh;return k-(Math.hypot(Math.max(qx,0),Math.max(qy,0))+Math.min(Math.max(qx,qy),0))})};
+let Fb;const shp=fx&&o.shp==='cont'?'rect':o.shp;
+if(shp==='cont')Fb=edt(P.M,P.GW,P.GH).map(v=>mg-v*px);
+else if(shp==='round'){const Rr=fx?Math.max(o.bw,o.bh)/2:Math.hypot(X1-X0,Y1-Y0)/2+mg;Fb=fld(P,(x,y)=>Rr-Math.hypot(x-cx,y-cy))}
+else{const w=fx?o.bw:X1-X0+2*mg,h=fx?o.bh:Y1-Y0+2*mg;Fb=rr(w,h,Math.min(o.cr,w/2,h/2))}
+const Fs=P.S.map(v=>v-P.lev);
+if(o.neg){r.push(R(Fb,P,0,bs,'#d8c3ad'),R(Fb.map((v,k)=>Math.min(v,-Fs[k])),P,bs-.02,bs+rl,'#8b5a3c'))}
+else r.push(R(Fb,P,0,bs,'#d8c3ad'),R(Fs,P,bs*.5,bs+rl,'#8b5a3c'));
+if(o.handle!=='none'){const d=o.hd,Rr=d/2,F=o.handle==='cyl'?fld(P,(x,y)=>Rr-Math.hypot(x-cx,y-cy)):o.handle==='ring'?fld(P,(x,y)=>Math.min(Rr-Math.hypot(x-cx,y-cy),Math.hypot(x-cx,y-cy)-Rr*.35)):rr(d,d*.6,1);
+r.push(R(F,P,-o.hh,bs*.5,'#b98a68'))}
+else if(B&&o.mk>0){const dx=cx-B.cx,dy=cy-B.cy,pl=contour(B.S.map(v=>v-B.lev),B).map(Q=>Q.map(rg=>rg.map(p=>[p[0]+dx,p[1]+dy])));r.push({p:pl,z0:-o.mk,z1:.2,col:'#b98a68'})}
+return r}
+function cutRegs(P,o){const sd=sdf(P),r=[],{wt,wh,fw,fh,ct}=o;
+if(fw>0&&fh>0)r.push(R(sd.map(v=>Math.min(v+fw,wt-v)),P,0,fh,'#d8c3ad'));
+if(ct>0)r.push(R(sd,P,0,ct,'#c9a98a'));
+r.push(R(sd.map(v=>Math.min(v,wt-v)),P,0,wh,'#8b5a3c'));
+if(o.pg==='bar')r.push(R(fld(P,(x,y,k)=>Math.min(sd[k],o.bwid/2-Math.abs(o.bdir==='v'?x-P.cx:y-P.cy))),P,wh-o.bt,wh,'#6b4429'));
+return r}
+function solidRegs(P,o){const sd=sdf(P),H=o.H;let U=sd,Hl=null;
+if(o.ear!=='none'){const er=o.er,E=o.ear==='two'?[-1,1]:[1],{X0,X1,cy}=P,cs=E.map(q=>[q<0?X0-er*.5:X1+er*.5,cy]),hs=E.map(q=>[q<0?X0-er*.9:X1+er*.9,cy]);
+U=fld(P,(x,y,k)=>{let v=sd[k];for(const[a,b]of cs)v=Math.max(v,er-Math.hypot(x-a,y-b));return v});
+Hl=fld(P,(x,y)=>{let v=1e9;for(const[a,b]of hs)v=Math.min(v,Math.hypot(x-a,y-b)-o.eh);return v})}
+const pr=(t,Rd,ty)=>ty==='flat'||Rd<=0||t>=Rd?0:ty==='round'?Rd-Math.sqrt(Math.max(0,Rd*Rd-(Rd-t)*(Rd-t))):Rd-t;
+const rb=Math.min(o.rb,H/2),rt=Math.min(o.rt,H/2),zs=[0],N=8;
+if(o.tb!=='flat'&&rb>0)for(let i=1;i<=N;i++)zs.push(rb*i/N);
+if(o.tt!=='flat'&&rt>0){if(zs[zs.length-1]<H-rt)zs.push(H-rt);for(let i=1;i<=N;i++)zs.push(H-rt+rt*i/N)}else zs.push(H);
+const r=[];for(let i=0;i<zs.length-1;i++){const za=zs[i],zb=zs[i+1],zm=(za+zb)/2,ins=Math.max(pr(zm,rb,o.tb),pr(H-zm,rt,o.tt));
+r.push(R(U.map((v,k)=>Math.min(v-ins,Hl?Hl[k]:1e9)),P,i?za-.02:za,zb,'#8b5a3c'))}return r}
+function tray(o){const L=o.sL,W=o.bh+o.sf,t=o.sw,f=o.sp,hh=o.sh,A=L+2*t,Bw=W+2*t,r=[];
+if(o.so){r.push({p:[[[[0,0],[A-t,0],[A-t,Bw],[0,Bw]]]],z0:0,z1:f,col:'#d8c3ad'},{p:[[[[0,0],[A-t,0],[A-t,t],[t,t],[t,W+t],[A-t,W+t],[A-t,Bw],[0,Bw]]]],z0:f-.02,z1:f+hh,col:'#8b5a3c'})}
+else r.push({p:[[[[0,0],[A,0],[A,Bw],[0,Bw]]]],z0:0,z1:f,col:'#d8c3ad'},{p:[[[[0,0],[A,0],[A,Bw],[0,Bw]],[[t,t],[t,W+t],[A-t,W+t],[A-t,t]]]],z0:f-.02,z1:f+hh,col:'#8b5a3c'});
+return r}
+async function letter(ch){const fam=$('fnt').value,fs=600,st=($('ital').checked?'italic ':'')+($('bold').checked?'bold ':''),f=st+fs+'px "'+fam+'", sans-serif';
+try{await document.fonts.load(st+fs+'px "'+fam+'"',ch)}catch(e){}
+const m=cnv(10,10).getContext('2d');m.font=f;const w=Math.ceil(m.measureText(ch).width)+120,cap=m.measureText('H').actualBoundingBoxAscent||fs*.7,
+cc=cnv(w,Math.ceil(fs*1.7)),g=cc.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,cc.width,cc.height);g.fillStyle='#000';g.font=f;g.fillText(ch,60,fs*1.2);return{src:cc,ppm:V('ls')/cap}}
+async function build(){const my=++tok;try{
+if(!window.d3||!window.earcut)throw Error('bibliotecas não carregaram (verifique a internet)');
+const mode=$('mode').value,al=mode==='alpha',D={th:V('th'),inv:$('inv').checked,sm:V('sm'),dim:$('dim').value,mir:(mode==='stamp'||al)&&$('mir').checked},parts=[],
+so={bs:V('bs'),rl:V('rl'),mg:V('mg'),shp:$('bsh').value,cr:V('cr'),fixed:al,bw:V('bw'),bh:V('bh'),neg:!al&&$('rtp').value==='neg',handle:$('hnd').value,hd:V('hd'),hh:V('hh'),mk:al&&$('mk').checked?V('mkh'):0};
+if(al){const ls=[...$('txt').value.replace(/\s/g,'')].slice(0,80);if(!ls.length)throw Error('digite ao menos uma letra');
+for(let i=0;i<ls.length;i++){if(my!==tok)return;$('info').textContent='Gerando letra '+(i+1)+' de '+ls.length+'…';await new Promise(r=>setTimeout(r));
+const{src,ppm}=await letter(ls[i]),P=prep(src,{...D,ppm,padmm:Math.max(so.bw,so.bh)}),B=so.mk>0&&so.handle==='none'?prep(src,{...D,mir:false,ppm,padmm:.5}):null;
+parts.push({name:String(i+1).padStart(2,'0')+'_'+ls[i]+'.stl',regs:stampRegs(P,B,so)})}
+if($('sup').checked)parts.push({name:'suporte_gaveta.stl',regs:tray({sL:V('sL'),bh:so.bh,sf:V('sf'),sw:V('sw'),sp:V('sp'),sh:V('sh'),so:$('so').checked})})}
+else{if(!SRC)return;const o={...D,mm:V('w'),padmm:1};
+if(mode==='cut'||mode==='mark')o.padmm=V('fw')+1;else if(mode==='stamp')o.padmm=so.mg+1;else if($('ear').value!=='none')o.padmm=V('er')*2+2;
+const P=prep(SRC,o),regs=mode==='stamp'?stampRegs(P,null,so):mode==='solid'?solidRegs(P,{H:V('H'),tb:$('tb').value,rb:V('rb'),tt:$('tt').value,rt:V('rt'),ear:$('ear').value,er:V('er'),eh:V('eh')}):
+cutRegs(P,{wt:V('wt'),wh:V('wh'),fw:V('fw'),fh:V('fh'),ct:V('ct'),pg:$('pg').value,bwid:V('bwid'),bt:V('bt'),bdir:$('bdir').value});
+parts.push({name:'moldae_'+mode+'.stl',regs})}
+if(my!==tok)return;
+for(const p of parts){p.T=[];for(const r of p.regs)prism(r.p,r.z0,r.z1,p.T)}
+PARTS=parts;const pv=$('pv');pv.hidden=parts.length<2;pv.innerHTML=parts.map((p,i)=>`<option value="${i}">${p.name}</option>`).join('');draw(0)
+}catch(e){$('info').textContent='Erro: '+e.message;console.error(e)}}
+$('pv').onchange=()=>draw(+$('pv').value);
+function draw(i){const p=PARTS[i];if(!p)return;let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9,z0=1e9,z1=-1e9;
+for(const r of p.regs){if(r.p.length){z0=Math.min(z0,r.z0);z1=Math.max(z1,r.z1)}for(const Q of r.p)for(const q of Q[0]){x0=Math.min(x0,q[0]);x1=Math.max(x1,q[0]);y0=Math.min(y0,q[1]);y1=Math.max(y1,q[1])}}
+if(x1<x0){$('info').textContent='Nada para gerar com esses parâmetros.';return}
+const sc=Math.min(1200/(x1-x0),1200/(y1-y0)),cv=$('cv');cv.width=Math.ceil((x1-x0)*sc)+20;cv.height=Math.ceil((y1-y0)*sc)+20;const g=cv.getContext('2d');
+for(const r of p.regs){g.beginPath();for(const Q of r.p)for(const ring of Q){ring.forEach((q,k)=>k?g.lineTo((q[0]-x0)*sc+10,(y1-q[1])*sc+10):g.moveTo((q[0]-x0)*sc+10,(y1-q[1])*sc+10));g.closePath()}g.fillStyle=r.col;g.fill('evenodd')}
+$('info').textContent=PARTS.length+' peça(s) · esta: '+(x1-x0).toFixed(1)+' × '+(y1-y0).toFixed(1)+' × '+(z1-z0).toFixed(1)+' mm · '+(p.T.length/9|0).toLocaleString('pt-BR')+' triângulos'}
+function stl(T){const n=T.length/9,b=new ArrayBuffer(84+n*50),v=new DataView(b);v.setUint32(80,n,true);let o=84;
+for(let t=0;t<n;t++){const q=T.slice(t*9,t*9+9),ux=q[3]-q[0],uy=q[4]-q[1],uz=q[5]-q[2],wx=q[6]-q[0],wy=q[7]-q[1],wz=q[8]-q[2];
+const nx=uy*wz-uz*wy,ny=uz*wx-ux*wz,nz=ux*wy-uy*wx,L=Math.hypot(nx,ny,nz)||1;[nx/L,ny/L,nz/L].forEach(a=>{v.setFloat32(o,a,true);o+=4});q.forEach(a=>{v.setFloat32(o,a,true);o+=4});o+=2}return b}
+const crcT=(()=>{const t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+const crc=u=>{let c=-1;for(let i=0;i<u.length;i++)c=crcT[(c^u[i])&255]^(c>>>8);return(c^-1)>>>0};
+function zip(files){const parts=[],cd=[],enc=new TextEncoder();let off=0;
+for(const f of files){const nm=enc.encode(f.name),cr=crc(f.data),L=f.data.length,h=new DataView(new ArrayBuffer(30));
+h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x800,true);h.setUint32(14,cr,true);h.setUint32(18,L,true);h.setUint32(22,L,true);h.setUint16(26,nm.length,true);parts.push(h.buffer,nm,f.data);
+const e=new DataView(new ArrayBuffer(46));e.setUint32(0,0x02014b50,true);e.setUint16(4,20,true);e.setUint16(6,20,true);e.setUint16(8,0x800,true);e.setUint32(16,cr,true);e.setUint32(20,L,true);e.setUint32(24,L,true);e.setUint16(28,nm.length,true);e.setUint32(42,off,true);cd.push(e.buffer,nm);off+=30+nm.length+L}
+let cs=0;for(const p of cd)cs+=p.byteLength;const en=new DataView(new ArrayBuffer(22));en.setUint32(0,0x06054b50,true);en.setUint16(8,files.length,true);en.setUint16(10,files.length,true);en.setUint32(12,cs,true);en.setUint32(16,off,true);
+return new Blob([...parts,...cd,en.buffer],{type:'application/zip'})}
+function ficha(){let t='Moldaê - ficha técnica\n'+new Date().toLocaleString('pt-BR')+'\nTipo: '+$('mode').selectedOptions[0].text+'\n';
+document.querySelectorAll('#ctl .f').forEach(f=>{if(f.hidden||!f.querySelector('input,select,textarea'))return;const i=f.querySelector('input,select,textarea');if(i.type==='file')return;
+t+=(f.querySelector('label')?.textContent||f.querySelector('span')?.textContent||i.id)+': '+(i.type==='checkbox'?(i.checked?'sim':'não'):i.value)+'\n'});return t+'Peças: '+PARTS.map(p=>p.name).join(', ')+'\n'}
+$('dl').onclick=async()=>{if(!PARTS.length){$('info').textContent='Gere uma peça primeiro.';return}
+const dl=window.claude?await window.claude.use('downloads'):null;if(!dl){$('info').textContent='Download indisponível neste ambiente.';return}
+const enc=new TextEncoder(),files=PARTS.map(p=>({name:p.name,data:new Uint8Array(stl(p.T))}));files.push({name:'ficha.txt',data:enc.encode(ficha())});
+try{await dl.save({filename:'moldae-'+$('mode').value+'.zip',data:zip(files)});$('info').textContent='Salvo! Extraia o ZIP para obter os STL.'}catch(e){if(e.code!=='declined')$('info').textContent='Não foi possível baixar ('+(e.code||e.message)+').'}};
+</script></body></html>
